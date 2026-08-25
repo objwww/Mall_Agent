@@ -94,6 +94,7 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
     private final AlertPort alertPort;
     private final DefaultLlmRegistry llmRegistry;
     private final LongSupplier clock;
+    private final ToolManifest toolManifest;
 
     /**
      * 完整生产便捷构造：同时接通退款与订单支付状态恢复。支付动作与独立验证分别走不同 endpoint；
@@ -213,8 +214,10 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
         this.evidencePool = Executors.newFixedThreadPool(
             Math.max(1, Math.min(DEFAULT_EVIDENCE_THREADS, Math.max(1, evidenceCollectors.size()))));
 
+        ToolManifest toolManifest = ToolManifest.from(toolSchemaVersion, evidenceCollectors, verificationSources);
         DefaultLlmRegistry llmRegistry = new DefaultLlmRegistry(
             llmClientFactory, ledger, alertPort, promptVersionStore, skillVersionStore, toolSchemaVersion,
+            toolManifest.digest(),
             initialModelId, DEFAULT_LLM_GRACE_SHUTDOWN, clock,
             diagnosisId -> runStore.find(diagnosisId).flatMap(DurableMallAgentRuntime::versionSnapshotOf));
         TicketUnderstandingService understandingService = new TicketUnderstandingService(llmRegistry, ledger, clock);
@@ -245,6 +248,7 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
         this.alertPort = alertPort;
         this.llmRegistry = llmRegistry;
         this.clock = clock;
+        this.toolManifest = toolManifest;
     }
 
     private static SkillVersionStore legacySkills() {
@@ -304,6 +308,7 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
     public ApprovalGate approvalGate() { return approvalGate; }
     public ActionExecutionRepository executionRepository() { return executionRepository; }
     public EventLedger eventLedger() { return eventLedger; }
+    public ToolManifest toolManifest() { return toolManifest; }
 
     /**
      * 一次耐久恢复周期：先把“已发送但未落结果”的执行推进到 UNKNOWN（结果未知）并入对账，

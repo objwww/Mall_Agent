@@ -10,6 +10,7 @@ import com.trade.mall.agent.llm.SkillVersionStore;
 import com.trade.mall.agent.llm.VersionSnapshot;
 import com.trade.mall.agent.llm.infrastructure.InMemorySkillVersionStore;
 import com.trade.mall.agent.runtime.AgentOperationReporter;
+import com.trade.mall.agent.runtime.ToolManifest;
 import com.trade.mall.agent.orchestration.ApprovalDecision;
 import com.trade.mall.agent.orchestration.DiagnosisOrchestrator;
 import com.trade.mall.agent.orchestration.DiagnosisRun;
@@ -41,6 +42,7 @@ public final class AgentControlHttpServer implements AutoCloseable {
     private final AgentOperationReporter reporter;
     private final PromptVersionStore prompts;
     private final SkillVersionStore skills;
+    private final ToolManifest tools;
     private final byte[] expectedBearer;
 
     public AgentControlHttpServer(InetSocketAddress address, String apiKey,
@@ -54,12 +56,21 @@ public final class AgentControlHttpServer implements AutoCloseable {
                                   DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
                                   AgentOperationReporter reporter, PromptVersionStore prompts,
                                   SkillVersionStore skills) {
+        this(address, apiKey, orchestrator, store, reporter, prompts, skills,
+            ToolManifest.from("legacy-no-manifest", java.util.List.of(), java.util.List.of()));
+    }
+
+    public AgentControlHttpServer(InetSocketAddress address, String apiKey,
+                                  DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
+                                  AgentOperationReporter reporter, PromptVersionStore prompts,
+                                  SkillVersionStore skills, ToolManifest tools) {
         if (apiKey == null || apiKey.isBlank()) throw new IllegalArgumentException("control apiKey must not be blank");
         this.orchestrator = Objects.requireNonNull(orchestrator, "orchestrator");
         this.store = Objects.requireNonNull(store, "store");
         this.reporter = Objects.requireNonNull(reporter, "reporter");
         this.prompts = Objects.requireNonNull(prompts, "prompts");
         this.skills = Objects.requireNonNull(skills, "skills");
+        this.tools = Objects.requireNonNull(tools, "tools");
         this.expectedBearer = ("Bearer " + apiKey.trim()).getBytes(StandardCharsets.UTF_8);
         try { this.server = HttpServer.create(Objects.requireNonNull(address, "address"), 0); }
         catch (IOException e) { throw new IllegalStateException("cannot bind Agent control HTTP server", e); }
@@ -69,11 +80,23 @@ public final class AgentControlHttpServer implements AutoCloseable {
         this.server.createContext("/internal/v1/health", this::handleHealth);
         this.server.createContext("/internal/v1/prompts", this::handlePrompts);
         this.server.createContext("/internal/v1/skills", this::handleSkills);
+        this.server.createContext("/internal/v1/tools", this::handleTools);
         this.server.createContext("/v1/runs", this::handleEvaluationRun);
     }
 
     public void start() { server.start(); }
     public int port() { return server.getAddress().getPort(); }
+
+    private void handleTools(HttpExchange exchange) throws IOException {
+        String traceId = prepareTraceId(exchange);
+        try {
+            logInfo(traceId, "查询工具清单入参", "method=" + exchange.getRequestMethod());
+            if (!authenticated(exchange)) { send(exchange, 401, jsonError("unauthorized")); return; }
+            if (!exchange.getRequestMethod().equals("GET")) { send(exchange, 405, jsonError("method_not_allowed")); return; }
+            send(exchange, 200, renderTools(tools));
+            logInfo(traceId, "查询工具清单出参", "version=" + tools.version() + ",digest=" + tools.digest() + ",count=" + tools.tools().size());
+        } finally { exchange.close(); }
+    }
 
     private void handleSkills(HttpExchange exchange) throws IOException {
         String traceId = prepareTraceId(exchange);
@@ -436,6 +459,19 @@ public final class AgentControlHttpServer implements AutoCloseable {
             out.append('{'); field(out, "version", version.version()); comma(out);
             out.append("\"current\":").append(version.current()).append(',');
             out.append("\"createdAt\":").append(version.createdAt()).append('}');
+        }
+        return out.append("]}").toString();
+    }
+
+    private static String renderTools(ToolManifest manifest) {
+        StringBuilder out = new StringBuilder("{");
+        field(out, "version", manifest.version()); comma(out); field(out, "digest", manifest.digest());
+        out.append(",\"items\":["); boolean first = true;
+        for (ToolManifest.ToolDefinition tool : manifest.tools()) {
+            if (!first) out.append(','); first = false;
+            out.append('{'); field(out, "name", tool.name()); comma(out); field(out, "category", tool.category());
+            comma(out); field(out, "mode", tool.mode()); comma(out); field(out, "contractVersion", tool.contractVersion());
+            comma(out); field(out, "detail", tool.detail()); out.append('}');
         }
         return out.append("]}").toString();
     }

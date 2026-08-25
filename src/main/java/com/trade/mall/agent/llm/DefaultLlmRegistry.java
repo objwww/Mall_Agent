@@ -37,6 +37,7 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
     private final PromptVersionStore promptVersionStore;
     private final SkillVersionStore skillVersionStore;
     private final String toolSchemaVersion;
+    private final String toolManifestDigest;
     private final Duration graceShutdown;
     private final LongSupplier clock;
     /** JVM 重启后按 diagnosisId 找回先前持久化的版本快照；旧构造器默认不启用。 */
@@ -66,7 +67,8 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
     public DefaultLlmRegistry(LlmClientFactory factory, EventLedger ledger, AlertPort alertPort,
                                PromptVersionStore promptVersionStore, String toolSchemaVersion,
                                String initialModelId, Duration graceShutdown, LongSupplier clock) {
-        this(factory, ledger, alertPort, promptVersionStore, legacySkillStore(), toolSchemaVersion, initialModelId,
+        this(factory, ledger, alertPort, promptVersionStore, legacySkillStore(), toolSchemaVersion,
+            VersionSnapshot.LEGACY_TOOL_MANIFEST_DIGEST, initialModelId,
             graceShutdown, clock, id -> Optional.empty());
     }
 
@@ -75,6 +77,7 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
                                String initialModelId, Duration graceShutdown, LongSupplier clock,
                                Function<String, Optional<VersionSnapshot>> historicalSnapshotResolver) {
         this(factory, ledger, alertPort, promptVersionStore, legacySkillStore(), toolSchemaVersion,
+            VersionSnapshot.LEGACY_TOOL_MANIFEST_DIGEST,
             initialModelId, graceShutdown, clock, historicalSnapshotResolver);
     }
 
@@ -82,12 +85,23 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
                                PromptVersionStore promptVersionStore, SkillVersionStore skillVersionStore,
                                String toolSchemaVersion, String initialModelId, Duration graceShutdown,
                                LongSupplier clock, Function<String, Optional<VersionSnapshot>> historicalSnapshotResolver) {
+        this(factory, ledger, alertPort, promptVersionStore, skillVersionStore, toolSchemaVersion,
+            VersionSnapshot.LEGACY_TOOL_MANIFEST_DIGEST, initialModelId, graceShutdown, clock,
+            historicalSnapshotResolver);
+    }
+
+    public DefaultLlmRegistry(LlmClientFactory factory, EventLedger ledger, AlertPort alertPort,
+                               PromptVersionStore promptVersionStore, SkillVersionStore skillVersionStore,
+                               String toolSchemaVersion, String toolManifestDigest, String initialModelId,
+                               Duration graceShutdown, LongSupplier clock,
+                               Function<String, Optional<VersionSnapshot>> historicalSnapshotResolver) {
         this.factory = factory;
         this.ledger = ledger;
         this.alertPort = alertPort;
         this.promptVersionStore = promptVersionStore;
         this.skillVersionStore = skillVersionStore;
         this.toolSchemaVersion = toolSchemaVersion;
+        this.toolManifestDigest = toolManifestDigest;
         this.graceShutdown = graceShutdown;
         this.clock = clock;
         this.historicalSnapshotResolver = historicalSnapshotResolver == null ? id -> Optional.empty() : historicalSnapshotResolver;
@@ -205,6 +219,11 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
                         + " with toolSchemaVersion=" + snapshot.toolSchemaVersion()
                         + "; runtime only has " + toolSchemaVersion + " (fail closed)");
                 }
+                if (!VersionSnapshot.LEGACY_TOOL_MANIFEST_DIGEST.equals(snapshot.toolManifestDigest())
+                        && !toolManifestDigest.equals(snapshot.toolManifestDigest())) {
+                    throw new IllegalStateException("cannot resume diagnosis " + diagnosisId
+                        + " because tool manifest digest changed (fail closed)");
+                }
                 PromptSnapshot promptSnapshot = promptVersionStore.find(snapshot.promptVersion())
                     .orElseThrow(() -> new IllegalStateException(
                         "historical prompt version missing: " + snapshot.promptVersion()));
@@ -219,7 +238,8 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
             PromptSnapshot promptSnapshot = promptVersionStore.current();
             SkillSnapshot skillSnapshot = skillVersionStore.current();
             VersionSnapshot snapshot = new VersionSnapshot(
-                lease.client.modelId(), promptSnapshot.version(), skillSnapshot.version(), toolSchemaVersion);
+                lease.client.modelId(), promptSnapshot.version(), skillSnapshot.version(), toolSchemaVersion,
+                toolManifestDigest);
             lease.refs++;
             pins.put(diagnosisId, new PinnedEntry(lease, snapshot, promptSnapshot, skillSnapshot));
             return snapshot;

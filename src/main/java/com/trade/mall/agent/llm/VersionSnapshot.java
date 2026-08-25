@@ -17,13 +17,18 @@ package com.trade.mall.agent.llm;
  * 只会悄悄给一个看起来合理的结论，比 crash 更难发现。</p>
  */
 public record VersionSnapshot(String modelId, String promptVersion, String skillVersion,
-                              String toolSchemaVersion) implements java.io.Serializable {
+                              String toolSchemaVersion, String toolManifestDigest) implements java.io.Serializable {
     private static final long serialVersionUID = 0L;
     public static final String LEGACY_SKILL_VERSION = "legacy-no-skill";
+    public static final String LEGACY_TOOL_MANIFEST_DIGEST = "legacy-no-manifest";
 
     /** 兼容升级前调用方；升级前运行没有真实 Skill 指令。 */
     public VersionSnapshot(String modelId, String promptVersion, String toolSchemaVersion) {
-        this(modelId, promptVersion, LEGACY_SKILL_VERSION, toolSchemaVersion);
+        this(modelId, promptVersion, LEGACY_SKILL_VERSION, toolSchemaVersion, LEGACY_TOOL_MANIFEST_DIGEST);
+    }
+
+    public VersionSnapshot(String modelId, String promptVersion, String skillVersion, String toolSchemaVersion) {
+        this(modelId, promptVersion, skillVersion, toolSchemaVersion, LEGACY_TOOL_MANIFEST_DIGEST);
     }
 
     public VersionSnapshot {
@@ -31,5 +36,6 @@ public record VersionSnapshot(String modelId, String promptVersion, String skill
         if (promptVersion == null || promptVersion.isBlank()) throw new IllegalArgumentException("promptVersion must not be blank");
         if (skillVersion == null || skillVersion.isBlank()) skillVersion = LEGACY_SKILL_VERSION;
         if (toolSchemaVersion == null || toolSchemaVersion.isBlank()) throw new IllegalArgumentException("toolSchemaVersion must not be blank");
+        if (toolManifestDigest == null || toolManifestDigest.isBlank()) toolManifestDigest = LEGACY_TOOL_MANIFEST_DIGEST;
     }
 }

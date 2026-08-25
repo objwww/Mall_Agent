@@ -173,6 +173,18 @@ class DefaultLlmRegistryTest {
         assertEquals("技能二", registry.skillForPinned("diag-skill-new").instructions());
     }
 
+    @Test void toolManifestDigest_isPinned_andHistoricalDriftFailsClosed() {
+        factory.register("modelA", () -> new ScriptedLlmClient("modelA").healthy(true));
+        var skills = new InMemorySkillVersionStore("skill-v1", "技能一");
+        var historical = new VersionSnapshot("modelA", "v1", "skill-v1", "tool-schema-v1", "old-digest");
+        var registry = new DefaultLlmRegistry(factory, ledger, alertPort, promptStore, skills,
+            "tool-schema-v1", "current-digest", "modelA", Duration.ofSeconds(5), () -> NOW,
+            id -> id.equals("old-diagnosis") ? java.util.Optional.of(historical) : java.util.Optional.empty());
+
+        assertEquals("current-digest", registry.pin("new-diagnosis").toolManifestDigest());
+        assertThrows(IllegalStateException.class, () -> registry.pin("old-diagnosis"));
+    }
+
     @Test void close_shutsCurrentClient_andIsIdempotent() {
         var clientA = new ScriptedLlmClient("modelA").healthy(true);
         factory.register("modelA", () -> clientA);
