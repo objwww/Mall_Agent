@@ -80,6 +80,7 @@ public final class ReasoningService {
         VersionSnapshot snapshot = llmRegistry.pin(diagnosisId); // 幂等：D6 TicketUnderstandingService 可能已经 pin 过
         LlmClient client = llmRegistry.forPinned(diagnosisId);
         PromptSnapshot promptSnapshot = llmRegistry.promptForPinned(diagnosisId);
+        String systemPrompt = llmRegistry.skillForPinned(diagnosisId).applyTo(promptSnapshot.prompt());
 
         Set<String> legalIds = legalEvidenceIds(bundle);
         List<String> allIdsForNoConclusion = List.copyOf(legalIds);
@@ -88,7 +89,7 @@ public final class ReasoningService {
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             LlmResponse response;
             try {
-                response = client.complete(buildRequest(promptSnapshot.prompt(), bundle, legalIds, forbiddenTypes, historicalExperiences, repairHint));
+                response = client.complete(buildRequest(systemPrompt, bundle, legalIds, forbiddenTypes, historicalExperiences, repairHint));
             } catch (LlmTimeoutException timeout) {
                 repairHint = ""; // 无副作用，直接重试，不需要修复提示（M-LLM-01 §1.3）
                 continue;
@@ -309,4 +310,3 @@ public final class ReasoningService {
 
     private long now() { return clock.getAsLong(); }
 }
-

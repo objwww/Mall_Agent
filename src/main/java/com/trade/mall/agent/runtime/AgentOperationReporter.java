@@ -28,7 +28,7 @@ public final class AgentOperationReporter {
     private final String ingestKey;
     private final String defaultModelId;
     private final Supplier<String> currentPromptVersion;
-    private final String skillVersion;
+    private final Supplier<String> currentSkillVersion;
     private final String toolSchemaVersion;
     private final EventLedger ledger;
     private final HttpClient client;
@@ -37,11 +37,18 @@ public final class AgentOperationReporter {
     public AgentOperationReporter(URI baseUri, String ingestKey, String defaultModelId,
                                   Supplier<String> currentPromptVersion, String skillVersion,
                                   String toolSchemaVersion, EventLedger ledger, Duration timeout) {
+        this(baseUri, ingestKey, defaultModelId, currentPromptVersion, () -> skillVersion,
+            toolSchemaVersion, ledger, timeout);
+    }
+
+    public AgentOperationReporter(URI baseUri, String ingestKey, String defaultModelId,
+                                  Supplier<String> currentPromptVersion, Supplier<String> currentSkillVersion,
+                                  String toolSchemaVersion, EventLedger ledger, Duration timeout) {
         this.baseUri = URI.create(required(baseUri, "operations baseUri").toString().replaceAll("/+$", ""));
         this.ingestKey = required(ingestKey, "operations ingestKey");
         this.defaultModelId = sized(defaultModelId, "modelId", 100);
         this.currentPromptVersion = required(currentPromptVersion, "promptVersion supplier");
-        this.skillVersion = sized(skillVersion, "skillVersion", 64);
+        this.currentSkillVersion = required(currentSkillVersion, "skillVersion supplier");
         this.toolSchemaVersion = sized(toolSchemaVersion, "toolSchemaVersion", 64);
         this.ledger = required(ledger, "eventLedger");
         this.timeout = required(timeout, "timeout");
@@ -105,7 +112,8 @@ public final class AgentOperationReporter {
         body.put("modelId", version == null ? defaultModelId : sized(version.modelId(), "modelId", 100));
         body.put("promptVersion", version == null ? sized(currentPromptVersion.get(), "promptVersion", 64)
             : sized(version.promptVersion(), "promptVersion", 64));
-        body.put("skillVersion", skillVersion);
+        body.put("skillVersion", version == null ? sized(currentSkillVersion.get(), "skillVersion", 64)
+            : sized(version.skillVersion(), "skillVersion", 64));
         body.put("toolSchemaVersion", version == null ? toolSchemaVersion : sized(version.toolSchemaVersion(), "toolSchemaVersion", 64));
         body.put("inputSummary", limit("工单=" + run.ticketSn() + ",诊断=" + run.diagnosisId(), 1000));
         body.put("startedAt", startedAt);

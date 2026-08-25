@@ -5,6 +5,10 @@ import com.sun.net.httpserver.HttpServer;
 import com.trade.mall.agent.llm.LlmJsonUtil;
 import com.trade.mall.agent.llm.PromptSnapshot;
 import com.trade.mall.agent.llm.PromptVersionStore;
+import com.trade.mall.agent.llm.SkillSnapshot;
+import com.trade.mall.agent.llm.SkillVersionStore;
+import com.trade.mall.agent.llm.VersionSnapshot;
+import com.trade.mall.agent.llm.infrastructure.InMemorySkillVersionStore;
 import com.trade.mall.agent.runtime.AgentOperationReporter;
 import com.trade.mall.agent.orchestration.ApprovalDecision;
 import com.trade.mall.agent.orchestration.DiagnosisOrchestrator;
@@ -36,16 +40,26 @@ public final class AgentControlHttpServer implements AutoCloseable {
     private final DiagnosisRunStore store;
     private final AgentOperationReporter reporter;
     private final PromptVersionStore prompts;
+    private final SkillVersionStore skills;
     private final byte[] expectedBearer;
 
     public AgentControlHttpServer(InetSocketAddress address, String apiKey,
                                   DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
                                   AgentOperationReporter reporter, PromptVersionStore prompts) {
+        this(address, apiKey, orchestrator, store, reporter, prompts,
+            new InMemorySkillVersionStore(VersionSnapshot.LEGACY_SKILL_VERSION, ""));
+    }
+
+    public AgentControlHttpServer(InetSocketAddress address, String apiKey,
+                                  DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
+                                  AgentOperationReporter reporter, PromptVersionStore prompts,
+                                  SkillVersionStore skills) {
         if (apiKey == null || apiKey.isBlank()) throw new IllegalArgumentException("control apiKey must not be blank");
         this.orchestrator = Objects.requireNonNull(orchestrator, "orchestrator");
         this.store = Objects.requireNonNull(store, "store");
         this.reporter = Objects.requireNonNull(reporter, "reporter");
         this.prompts = Objects.requireNonNull(prompts, "prompts");
+        this.skills = Objects.requireNonNull(skills, "skills");
         this.expectedBearer = ("Bearer " + apiKey.trim()).getBytes(StandardCharsets.UTF_8);
         try { this.server = HttpServer.create(Objects.requireNonNull(address, "address"), 0); }
         catch (IOException e) { throw new IllegalStateException("cannot bind Agent control HTTP server", e); }
@@ -54,11 +68,57 @@ public final class AgentControlHttpServer implements AutoCloseable {
         this.server.createContext("/internal/v1/diagnoses", this::handleDiagnoses);
         this.server.createContext("/internal/v1/health", this::handleHealth);
         this.server.createContext("/internal/v1/prompts", this::handlePrompts);
+        this.server.createContext("/internal/v1/skills", this::handleSkills);
         this.server.createContext("/v1/runs", this::handleEvaluationRun);
     }
 
     public void start() { server.start(); }
     public int port() { return server.getAddress().getPort(); }
+
+    private void handleSkills(HttpExchange exchange) throws IOException {
+        String traceId = prepareTraceId(exchange);
+        try {
+            if (!authenticated(exchange)) { send(exchange, 401, jsonError("unauthorized")); return; }
+            String path = exchange.getRequestURI().getPath();
+            String base = "/internal/v1/skills";
+            String rest = path.length() <= base.length() ? "" : path.substring(base.length());
+            logInfo(traceId, "技能版本接口入参", "method=" + exchange.getRequestMethod() + ",path=" + path);
+            if ((rest.isEmpty() || rest.equals("/")) && exchange.getRequestMethod().equals("GET")) {
+                int limit = queryLimit(exchange.getRequestURI().getRawQuery());
+                send(exchange, 200, renderSkillHistory(skills.history(limit)));
+                logInfo(traceId, "查询技能历史出参", "limit=" + limit + ",currentVersion=" + skills.currentVersion());
+                return;
+            }
+            if ((rest.isEmpty() || rest.equals("/")) && exchange.getRequestMethod().equals("POST")) {
+                Map<String,Object> body = parseBody(exchange);
+                String version = promptVersion(required(body, "version"));
+                String instructions = required(body, "instructions");
+                if (instructions.length() > 60_000) throw new IllegalArgumentException("skill instructions too long");
+                skills.publish(version, instructions);
+                send(exchange, 200, renderSkill(skills.current()));
+                logInfo(traceId, "发布技能版本出参", "version=" + version + ",instructionsLength=" + instructions.length());
+                return;
+            }
+            if (rest.equals("/current") && exchange.getRequestMethod().equals("GET")) {
+                send(exchange, 200, renderSkill(skills.current()));
+                logInfo(traceId, "查询当前技能出参", "version=" + skills.currentVersion());
+                return;
+            }
+            if (rest.startsWith("/") && rest.endsWith("/activate") && exchange.getRequestMethod().equals("POST")) {
+                String version = promptVersion(rest.substring(1, rest.length() - "/activate".length()));
+                send(exchange, 200, renderSkill(skills.activate(version)));
+                logInfo(traceId, "切换技能版本出参", "version=" + version);
+                return;
+            }
+            send(exchange, 404, jsonError("not_found"));
+        } catch (IllegalArgumentException bad) {
+            logWarn(traceId, "技能版本参数错误", bad.getMessage()); send(exchange, 400, jsonError(bad.getMessage()));
+        } catch (IllegalStateException conflict) {
+            logWarn(traceId, "技能版本状态冲突", conflict.getMessage()); send(exchange, 409, jsonError(conflict.getMessage()));
+        } catch (RuntimeException failed) {
+            logWarn(traceId, "技能版本接口失败", failed.getClass().getSimpleName()); send(exchange, 500, jsonError("runtime_failure"));
+        } finally { exchange.close(); }
+    }
 
     private void handlePrompts(HttpExchange exchange) throws IOException {
         String traceId = prepareTraceId(exchange);
@@ -355,6 +415,23 @@ public final class AgentControlHttpServer implements AutoCloseable {
         StringBuilder out = new StringBuilder("{\"items\":[");
         boolean first = true;
         for (PromptVersionStore.PromptVersionInfo version : versions) {
+            if (!first) out.append(','); first = false;
+            out.append('{'); field(out, "version", version.version()); comma(out);
+            out.append("\"current\":").append(version.current()).append(',');
+            out.append("\"createdAt\":").append(version.createdAt()).append('}');
+        }
+        return out.append("]}").toString();
+    }
+
+    private static String renderSkill(SkillSnapshot skill) {
+        StringBuilder out = new StringBuilder("{");
+        field(out, "version", skill.version()); comma(out); field(out, "instructions", skill.instructions());
+        return out.append('}').toString();
+    }
+
+    private static String renderSkillHistory(java.util.List<SkillVersionStore.SkillVersionInfo> versions) {
+        StringBuilder out = new StringBuilder("{\"items\":["); boolean first = true;
+        for (SkillVersionStore.SkillVersionInfo version : versions) {
             if (!first) out.append(','); first = false;
             out.append('{'); field(out, "version", version.version()); comma(out);
             out.append("\"current\":").append(version.current()).append(',');

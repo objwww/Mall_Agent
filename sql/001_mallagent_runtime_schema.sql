@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS agent_prompt_version (
     KEY idx_agent_prompt_current (is_current, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MallAgent提示词版本历史';
 
+CREATE TABLE IF NOT EXISTS agent_skill_version (
+    skill_version VARCHAR(191) NOT NULL COMMENT '技能指令不可变版本',
+    skill_instructions TEXT NOT NULL COMMENT '实际附加到模型系统提示词的技能指令',
+    is_current TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否为新诊断默认版本',
+    created_at BIGINT NOT NULL COMMENT '发布时间毫秒时间戳',
+    PRIMARY KEY (skill_version),
+    KEY idx_agent_skill_current (is_current, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MallAgent技能指令版本历史';
+
 CREATE TABLE IF NOT EXISTS agent_nonfund_execution (
     operation_id VARCHAR(191) NOT NULL COMMENT '非资金动作幂等编号',
     action_type VARCHAR(64) NOT NULL COMMENT '动作类型',

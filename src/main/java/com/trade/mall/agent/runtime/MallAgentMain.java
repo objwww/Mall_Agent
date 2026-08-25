@@ -4,6 +4,7 @@ import com.trade.mall.agent.alert.infrastructure.StderrAlertPort;
 import com.trade.mall.agent.approval.infrastructure.JdbcMallAdminAuthorizationPort;
 import com.trade.mall.agent.execution.infrastructure.HttpMallRefundActionPort;
 import com.trade.mall.agent.llm.infrastructure.JdbcPromptVersionStore;
+import com.trade.mall.agent.llm.infrastructure.JdbcSkillVersionStore;
 import com.trade.mall.agent.llm.infrastructure.OpenAiCompatibleLlmClientFactory;
 import com.trade.mall.agent.runtime.http.AgentControlHttpServer;
 import com.trade.mall.agent.runtime.infrastructure.DriverManagerDataSource;
@@ -35,6 +36,8 @@ public final class MallAgentMain {
 
         JdbcPromptVersionStore prompts = new JdbcPromptVersionStore(runtimeDb, System::currentTimeMillis);
         ensurePromptConfigured(prompts, env);
+        JdbcSkillVersionStore skills = new JdbcSkillVersionStore(runtimeDb, System::currentTimeMillis);
+        ensureSkillConfigured(skills, env);
 
         String initialModelId = env.required("AGENT_LLM_INITIAL_MODEL_ID");
         ensureModelRoleIsolation(env, initialModelId);
@@ -46,7 +49,7 @@ public final class MallAgentMain {
         StderrAlertPort alerts = new StderrAlertPort();
 
         DurableMallAgentRuntime runtime = new DurableMallAgentRuntime(
-            runtimeDb, evidenceDb, llmFactory, prompts, initialModelId, toolSchemaVersion,
+            runtimeDb, evidenceDb, llmFactory, prompts, skills, initialModelId, toolSchemaVersion,
             new JdbcMallAdminAuthorizationPort(evidenceDb, Duration.ofSeconds(1)),
             () -> parseOptionalBoolean(System.getenv("AGENT_MONEY_ACTION_ALLOWED")),
             new HttpMallRefundActionPort(mallBaseUri.toString(), tenantId, mallApiKey),
@@ -57,9 +60,9 @@ public final class MallAgentMain {
             env.required("AGENT_CONTROL_API_KEY"), runtime.orchestrator(), runtime.diagnosisRunStore(),
             new AgentOperationReporter(
                 URI.create(env.required("AGENT_OPERATIONS_BASE_URL")), env.required("AGENT_OPERATIONS_INGEST_KEY"),
-                initialModelId, prompts::currentVersion, env.get("AGENT_SKILL_VERSION", "v1"),
+                initialModelId, prompts::currentVersion, skills::currentVersion,
                 toolSchemaVersion, runtime.eventLedger(), Duration.ofSeconds(
-                    env.longValue("AGENT_OPERATIONS_TIMEOUT_SECONDS", 5L, 1L, 120L))), prompts);
+                    env.longValue("AGENT_OPERATIONS_TIMEOUT_SECONDS", 5L, 1L, 120L))), prompts, skills);
         DurableMallAgentScheduler scheduler = new DurableMallAgentScheduler(
             runtime, alerts, Duration.ofMillis(env.longValue("AGENT_MAINTENANCE_INTERVAL_MS", 5000L, 1000L, 3_600_000L)),
             env.intValue("AGENT_MAINTENANCE_BATCH", 50, 1, 1000));
@@ -79,6 +82,18 @@ public final class MallAgentMain {
                 throw new IllegalStateException("agent_prompt_version 没有 current 版本；首次启动必须提供 AGENT_PROMPT_VERSION + AGENT_PROMPT_TEXT", noCurrent);
             }
             store.publish(version, text);
+        }
+    }
+
+    private static void ensureSkillConfigured(JdbcSkillVersionStore store, Env env) {
+        try { store.current(); return; }
+        catch (IllegalStateException noCurrent) {
+            String version = env.optional("AGENT_SKILL_VERSION");
+            String instructions = env.optional("AGENT_SKILL_INSTRUCTIONS");
+            if (version == null || instructions == null) {
+                throw new IllegalStateException("agent_skill_version 没有 current 版本；首次启动必须提供 AGENT_SKILL_VERSION + AGENT_SKILL_INSTRUCTIONS", noCurrent);
+            }
+            store.publish(version, instructions);
         }
     }
 

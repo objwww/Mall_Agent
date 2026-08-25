@@ -4,6 +4,7 @@ import com.trade.mall.agent.alert.infrastructure.InMemoryAlertPort;
 import com.trade.mall.agent.ledger.infrastructure.InMemoryEventLedger;
 import com.trade.mall.agent.llm.infrastructure.InMemoryLlmClientFactory;
 import com.trade.mall.agent.llm.infrastructure.InMemoryPromptVersionStore;
+import com.trade.mall.agent.llm.infrastructure.InMemorySkillVersionStore;
 import com.trade.mall.agent.llm.infrastructure.ScriptedLlmClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -155,6 +156,23 @@ class DefaultLlmRegistryTest {
         assertTrue(clientA.shutdownCalled(), "最后一个 pin 释放后旧 client 才真正关闭");
     }
 
+    @Test void skillHotUpdate_onlyAffectsNewDiagnosis() {
+        var client = new ScriptedLlmClient("modelA").healthy(true);
+        factory.register("modelA", () -> client);
+        var skills = new InMemorySkillVersionStore("skill-v1", "技能一");
+        var registry = new DefaultLlmRegistry(factory, ledger, alertPort, promptStore, skills,
+            "tool-schema-v1", "modelA", Duration.ofSeconds(5), () -> NOW, id -> java.util.Optional.empty());
+
+        VersionSnapshot oldSnapshot = registry.pin("diag-skill-old");
+        skills.publish("skill-v2", "技能二");
+        VersionSnapshot newSnapshot = registry.pin("diag-skill-new");
+
+        assertEquals("skill-v1", oldSnapshot.skillVersion());
+        assertEquals("技能一", registry.skillForPinned("diag-skill-old").instructions());
+        assertEquals("skill-v2", newSnapshot.skillVersion());
+        assertEquals("技能二", registry.skillForPinned("diag-skill-new").instructions());
+    }
+
     @Test void close_shutsCurrentClient_andIsIdempotent() {
         var clientA = new ScriptedLlmClient("modelA").healthy(true);
         factory.register("modelA", () -> clientA);
@@ -197,4 +215,3 @@ class DefaultLlmRegistryTest {
         }
     }
 }
-

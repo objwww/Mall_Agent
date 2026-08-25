@@ -35,6 +35,7 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
     private final EventLedger ledger;
     private final AlertPort alertPort;
     private final PromptVersionStore promptVersionStore;
+    private final SkillVersionStore skillVersionStore;
     private final String toolSchemaVersion;
     private final Duration graceShutdown;
     private final LongSupplier clock;
@@ -57,14 +58,15 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
     }
 
     /** ADR-015 版本钉住：diagnosisId → 客户端租约 + 版本/提示词快照。 */
-    private record PinnedEntry(ClientLease lease, VersionSnapshot snapshot, PromptSnapshot promptSnapshot) {}
+    private record PinnedEntry(ClientLease lease, VersionSnapshot snapshot, PromptSnapshot promptSnapshot,
+                               SkillSnapshot skillSnapshot) {}
     private final ConcurrentHashMap<String, PinnedEntry> pins = new ConcurrentHashMap<>();
     private volatile boolean closed;
 
     public DefaultLlmRegistry(LlmClientFactory factory, EventLedger ledger, AlertPort alertPort,
                                PromptVersionStore promptVersionStore, String toolSchemaVersion,
                                String initialModelId, Duration graceShutdown, LongSupplier clock) {
-        this(factory, ledger, alertPort, promptVersionStore, toolSchemaVersion, initialModelId,
+        this(factory, ledger, alertPort, promptVersionStore, legacySkillStore(), toolSchemaVersion, initialModelId,
             graceShutdown, clock, id -> Optional.empty());
     }
 
@@ -72,10 +74,19 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
                                PromptVersionStore promptVersionStore, String toolSchemaVersion,
                                String initialModelId, Duration graceShutdown, LongSupplier clock,
                                Function<String, Optional<VersionSnapshot>> historicalSnapshotResolver) {
+        this(factory, ledger, alertPort, promptVersionStore, legacySkillStore(), toolSchemaVersion,
+            initialModelId, graceShutdown, clock, historicalSnapshotResolver);
+    }
+
+    public DefaultLlmRegistry(LlmClientFactory factory, EventLedger ledger, AlertPort alertPort,
+                               PromptVersionStore promptVersionStore, SkillVersionStore skillVersionStore,
+                               String toolSchemaVersion, String initialModelId, Duration graceShutdown,
+                               LongSupplier clock, Function<String, Optional<VersionSnapshot>> historicalSnapshotResolver) {
         this.factory = factory;
         this.ledger = ledger;
         this.alertPort = alertPort;
         this.promptVersionStore = promptVersionStore;
+        this.skillVersionStore = skillVersionStore;
         this.toolSchemaVersion = toolSchemaVersion;
         this.graceShutdown = graceShutdown;
         this.clock = clock;
@@ -197,18 +208,20 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
                 PromptSnapshot promptSnapshot = promptVersionStore.find(snapshot.promptVersion())
                     .orElseThrow(() -> new IllegalStateException(
                         "historical prompt version missing: " + snapshot.promptVersion()));
+                SkillSnapshot skillSnapshot = historicalSkill(snapshot);
                 ClientLease lease = leaseForHistoricalModel(snapshot.modelId());
                 lease.refs++;
-                pins.put(diagnosisId, new PinnedEntry(lease, snapshot, promptSnapshot));
+                pins.put(diagnosisId, new PinnedEntry(lease, snapshot, promptSnapshot, skillSnapshot));
                 return snapshot;
             }
 
             ClientLease lease = currentLease;
             PromptSnapshot promptSnapshot = promptVersionStore.current();
+            SkillSnapshot skillSnapshot = skillVersionStore.current();
             VersionSnapshot snapshot = new VersionSnapshot(
-                lease.client.modelId(), promptSnapshot.version(), toolSchemaVersion);
+                lease.client.modelId(), promptSnapshot.version(), skillSnapshot.version(), toolSchemaVersion);
             lease.refs++;
-            pins.put(diagnosisId, new PinnedEntry(lease, snapshot, promptSnapshot));
+            pins.put(diagnosisId, new PinnedEntry(lease, snapshot, promptSnapshot, skillSnapshot));
             return snapshot;
         } finally {
             switchLock.unlock();
@@ -231,6 +244,26 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
             throw new IllegalStateException("no pinned snapshot for diagnosisId=" + diagnosisId + "; call pin() first");
         }
         return entry.promptSnapshot();
+    }
+
+    @Override
+    public SkillSnapshot skillForPinned(String diagnosisId) {
+        PinnedEntry entry = pins.get(diagnosisId);
+        if (entry == null) throw new IllegalStateException("no pinned snapshot for diagnosisId=" + diagnosisId + "; call pin() first");
+        return entry.skillSnapshot();
+    }
+
+    private SkillSnapshot historicalSkill(VersionSnapshot snapshot) {
+        if (VersionSnapshot.LEGACY_SKILL_VERSION.equals(snapshot.skillVersion())) {
+            return new SkillSnapshot(VersionSnapshot.LEGACY_SKILL_VERSION, "");
+        }
+        return skillVersionStore.find(snapshot.skillVersion()).orElseThrow(() ->
+            new IllegalStateException("historical skill version missing: " + snapshot.skillVersion()));
+    }
+
+    private static SkillVersionStore legacySkillStore() {
+        return new com.trade.mall.agent.llm.infrastructure.InMemorySkillVersionStore(
+            VersionSnapshot.LEGACY_SKILL_VERSION, "");
     }
 
     @Override
@@ -305,4 +338,3 @@ public final class DefaultLlmRegistry implements LlmRegistry, AutoCloseable {
         if (closed) throw new IllegalStateException("LLM registry is closed");
     }
 }
-

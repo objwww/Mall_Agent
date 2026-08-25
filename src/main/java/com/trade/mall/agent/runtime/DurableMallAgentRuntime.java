@@ -35,6 +35,9 @@ import com.trade.mall.agent.llm.DefaultLlmRegistry;
 import com.trade.mall.agent.llm.LlmClientFactory;
 import com.trade.mall.agent.llm.LlmRegistry;
 import com.trade.mall.agent.llm.PromptVersionStore;
+import com.trade.mall.agent.llm.SkillVersionStore;
+import com.trade.mall.agent.llm.VersionSnapshot;
+import com.trade.mall.agent.llm.infrastructure.InMemorySkillVersionStore;
 import com.trade.mall.agent.orchestration.DiagnosisOrchestrator;
 import com.trade.mall.agent.orchestration.DiagnosisRun;
 import com.trade.mall.agent.orchestration.DiagnosisRunStore;
@@ -110,7 +113,18 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
                                    String agentApiKey,
                                    AlertPort alertPort,
                                    LongSupplier clock) {
-        this(runtimeDataSource, llmClientFactory, promptVersionStore, initialModelId, toolSchemaVersion,
+        this(runtimeDataSource, evidenceReadDataSource, llmClientFactory, promptVersionStore, legacySkills(),
+            initialModelId, toolSchemaVersion, authorizationPort, configReader, refundActionPort,
+            mallBaseUri, tenantId, agentApiKey, alertPort, clock);
+    }
+
+    public DurableMallAgentRuntime(DataSource runtimeDataSource, DataSource evidenceReadDataSource,
+                                   LlmClientFactory llmClientFactory, PromptVersionStore promptVersionStore,
+                                   SkillVersionStore skillVersionStore, String initialModelId, String toolSchemaVersion,
+                                   AuthorizationPort authorizationPort, KillSwitch.ConfigReader configReader,
+                                   ActionPort refundActionPort, URI mallBaseUri, String tenantId, String agentApiKey,
+                                   AlertPort alertPort, LongSupplier clock) {
+        this(runtimeDataSource, llmClientFactory, promptVersionStore, skillVersionStore, initialModelId, toolSchemaVersion,
             jdbcEvidenceCollectors(evidenceReadDataSource, mallBaseUri, tenantId, agentApiKey),
             jdbcVerificationSources(evidenceReadDataSource, mallBaseUri, tenantId, agentApiKey),
             authorizationPort, configReader, refundActionPort,
@@ -155,9 +169,23 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
                                    NonFundActionExecutor nonFundActionExecutor,
                                    AlertPort alertPort,
                                    LongSupplier clock) {
+        this(dataSource, llmClientFactory, promptVersionStore, legacySkills(), initialModelId, toolSchemaVersion,
+            evidenceCollectors, verificationSources, authorizationPort, configReader, actionPort,
+            nonFundActionExecutor, alertPort, clock);
+    }
+
+    public DurableMallAgentRuntime(DataSource dataSource, LlmClientFactory llmClientFactory,
+                                   PromptVersionStore promptVersionStore, SkillVersionStore skillVersionStore,
+                                   String initialModelId, String toolSchemaVersion,
+                                   List<EvidenceCollector<?>> evidenceCollectors,
+                                   List<IndependentFactSource> verificationSources,
+                                   AuthorizationPort authorizationPort, KillSwitch.ConfigReader configReader,
+                                   ActionPort actionPort, NonFundActionExecutor nonFundActionExecutor,
+                                   AlertPort alertPort, LongSupplier clock) {
         Objects.requireNonNull(dataSource, "dataSource");
         Objects.requireNonNull(llmClientFactory, "llmClientFactory");
         Objects.requireNonNull(promptVersionStore, "promptVersionStore");
+        Objects.requireNonNull(skillVersionStore, "skillVersionStore");
         Objects.requireNonNull(evidenceCollectors, "evidenceCollectors");
         Objects.requireNonNull(verificationSources, "verificationSources");
         Objects.requireNonNull(authorizationPort, "authorizationPort");
@@ -186,7 +214,7 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
             Math.max(1, Math.min(DEFAULT_EVIDENCE_THREADS, Math.max(1, evidenceCollectors.size()))));
 
         DefaultLlmRegistry llmRegistry = new DefaultLlmRegistry(
-            llmClientFactory, ledger, alertPort, promptVersionStore, toolSchemaVersion,
+            llmClientFactory, ledger, alertPort, promptVersionStore, skillVersionStore, toolSchemaVersion,
             initialModelId, DEFAULT_LLM_GRACE_SHUTDOWN, clock,
             diagnosisId -> runStore.find(diagnosisId).flatMap(DurableMallAgentRuntime::versionSnapshotOf));
         TicketUnderstandingService understandingService = new TicketUnderstandingService(llmRegistry, ledger, clock);
@@ -217,6 +245,10 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
         this.alertPort = alertPort;
         this.llmRegistry = llmRegistry;
         this.clock = clock;
+    }
+
+    private static SkillVersionStore legacySkills() {
+        return new InMemorySkillVersionStore(VersionSnapshot.LEGACY_SKILL_VERSION, "");
     }
 
     private static List<EvidenceCollector<?>> jdbcEvidenceCollectors(DataSource evidenceReadDataSource) {
@@ -349,4 +381,3 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
 
     public record MaintenanceReport(int approvalsExpired, RecoveryCycleReport recovery) {}
 }
-

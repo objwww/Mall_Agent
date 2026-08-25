@@ -45,7 +45,9 @@ public interface LlmRegistry {
      */
     PromptSnapshot promptForPinned(String diagnosisId);
 
+    /** 取首次 pin 时冻结的 Skill 指令；热切换不会改变在途诊断。 */
+    SkillSnapshot skillForPinned(String diagnosisId);
+
     /** 诊断结束，释放钉住记录。 */
     void release(String diagnosisId);
 }
-

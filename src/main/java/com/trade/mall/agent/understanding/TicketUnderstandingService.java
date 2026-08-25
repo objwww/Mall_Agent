@@ -55,12 +55,13 @@ public final class TicketUnderstandingService {
         VersionSnapshot snapshot = llmRegistry.pin(diagnosisId);
         LlmClient client = llmRegistry.forPinned(diagnosisId);
         PromptSnapshot promptSnapshot = llmRegistry.promptForPinned(diagnosisId);
+        String systemPrompt = llmRegistry.skillForPinned(diagnosisId).applyTo(promptSnapshot.prompt());
 
         String repairHint = "";
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             LlmResponse response;
             try {
-                response = client.complete(buildRequest(promptSnapshot.prompt(), freeText, repairHint));
+                response = client.complete(buildRequest(systemPrompt, freeText, repairHint));
             } catch (LlmTimeoutException timeout) {
                 // 无副作用，可直接重试（M-LLM-01 §1.3）——不追加修复提示，问题不在 schema。
                 repairHint = "";
@@ -148,4 +149,3 @@ public final class TicketUnderstandingService {
         return new LlmRequest(system, freeText, 512);
     }
 }
-

@@ -16,11 +16,20 @@ package com.trade.mall.agent.llm;
  * 引用 Restate 的教训："The journal no longer matches the code"，这种错误不会报错，
  * 只会悄悄给一个看起来合理的结论，比 crash 更难发现。</p>
  */
-public record VersionSnapshot(String modelId, String promptVersion, String toolSchemaVersion) implements java.io.Serializable {
+public record VersionSnapshot(String modelId, String promptVersion, String skillVersion,
+                              String toolSchemaVersion) implements java.io.Serializable {
+    private static final long serialVersionUID = 0L;
+    public static final String LEGACY_SKILL_VERSION = "legacy-no-skill";
+
+    /** 兼容升级前调用方；升级前运行没有真实 Skill 指令。 */
+    public VersionSnapshot(String modelId, String promptVersion, String toolSchemaVersion) {
+        this(modelId, promptVersion, LEGACY_SKILL_VERSION, toolSchemaVersion);
+    }
+
     public VersionSnapshot {
         if (modelId == null || modelId.isBlank()) throw new IllegalArgumentException("modelId must not be blank");
         if (promptVersion == null || promptVersion.isBlank()) throw new IllegalArgumentException("promptVersion must not be blank");
+        if (skillVersion == null || skillVersion.isBlank()) skillVersion = LEGACY_SKILL_VERSION;
         if (toolSchemaVersion == null || toolSchemaVersion.isBlank()) throw new IllegalArgumentException("toolSchemaVersion must not be blank");
     }
 }
-
