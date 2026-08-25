@@ -54,7 +54,12 @@ public final class MallAgentMain {
 
         AgentControlHttpServer control = new AgentControlHttpServer(
             new InetSocketAddress(env.get("AGENT_CONTROL_HOST", "127.0.0.1"), env.intValue("AGENT_CONTROL_PORT", 18080, 1, 65535)),
-            env.required("AGENT_CONTROL_API_KEY"), runtime.orchestrator(), runtime.diagnosisRunStore());
+            env.required("AGENT_CONTROL_API_KEY"), runtime.orchestrator(), runtime.diagnosisRunStore(),
+            new AgentOperationReporter(
+                URI.create(env.required("AGENT_OPERATIONS_BASE_URL")), env.required("AGENT_OPERATIONS_INGEST_KEY"),
+                initialModelId, prompts.current().version(), env.get("AGENT_SKILL_VERSION", "v1"),
+                toolSchemaVersion, runtime.eventLedger(), Duration.ofSeconds(
+                    env.longValue("AGENT_OPERATIONS_TIMEOUT_SECONDS", 5L, 1L, 120L))));
         DurableMallAgentScheduler scheduler = new DurableMallAgentScheduler(
             runtime, alerts, Duration.ofMillis(env.longValue("AGENT_MAINTENANCE_INTERVAL_MS", 5000L, 1000L, 3_600_000L)),
             env.intValue("AGENT_MAINTENANCE_BATCH", 50, 1, 1000));

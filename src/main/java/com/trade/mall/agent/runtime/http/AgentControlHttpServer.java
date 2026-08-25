@@ -3,6 +3,7 @@ package com.trade.mall.agent.runtime.http;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.trade.mall.agent.llm.LlmJsonUtil;
+import com.trade.mall.agent.runtime.AgentOperationReporter;
 import com.trade.mall.agent.orchestration.ApprovalDecision;
 import com.trade.mall.agent.orchestration.DiagnosisOrchestrator;
 import com.trade.mall.agent.orchestration.DiagnosisRun;
@@ -30,13 +31,16 @@ public final class AgentControlHttpServer implements AutoCloseable {
     private final ExecutorService executor;
     private final DiagnosisOrchestrator orchestrator;
     private final DiagnosisRunStore store;
+    private final AgentOperationReporter reporter;
     private final byte[] expectedBearer;
 
     public AgentControlHttpServer(InetSocketAddress address, String apiKey,
-                                  DiagnosisOrchestrator orchestrator, DiagnosisRunStore store) {
+                                  DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
+                                  AgentOperationReporter reporter) {
         if (apiKey == null || apiKey.isBlank()) throw new IllegalArgumentException("control apiKey must not be blank");
         this.orchestrator = Objects.requireNonNull(orchestrator, "orchestrator");
         this.store = Objects.requireNonNull(store, "store");
+        this.reporter = Objects.requireNonNull(reporter, "reporter");
         this.expectedBearer = ("Bearer " + apiKey.trim()).getBytes(StandardCharsets.UTF_8);
         try { this.server = HttpServer.create(Objects.requireNonNull(address, "address"), 0); }
         catch (IOException e) { throw new IllegalStateException("cannot bind Agent control HTTP server", e); }
@@ -105,6 +109,7 @@ public final class AgentControlHttpServer implements AutoCloseable {
         if (!run.ticketSn().equals(ticketSn)) {
             throw new IllegalStateException("diagnosisId already bound to another ticket");
         }
+        reporter.sync(run, responseTraceId(exchange));
         send(exchange, 200, render(run));
         logInfo(responseTraceId(exchange), "创建诊断出参",
             "ticketSn=" + ticketSn + ",diagnosisId=" + diagnosisId + ",state=" + run.state() + ",seq=" + run.seq());
@@ -113,6 +118,7 @@ public final class AgentControlHttpServer implements AutoCloseable {
     private void get(HttpExchange exchange, String diagnosisId) throws IOException {
         DiagnosisRun run = store.find(diagnosisId).orElse(null);
         if (run == null) { send(exchange, 404, jsonError("diagnosis_not_found")); return; }
+        reporter.sync(run, responseTraceId(exchange));
         send(exchange, 200, render(run));
         logInfo(responseTraceId(exchange), "查询诊断出参",
             "diagnosisId=" + diagnosisId + ",state=" + run.state() + ",seq=" + run.seq());
@@ -127,6 +133,7 @@ public final class AgentControlHttpServer implements AutoCloseable {
         catch (IllegalArgumentException e) { throw new IllegalArgumentException("invalid decision"); }
         if (decision == ApprovalDecision.LET_EXPIRE) throw new IllegalArgumentException("LET_EXPIRE is scheduler-only");
         DiagnosisRun run = orchestrator.resumeAfterApproval(diagnosisId, decision, approverId);
+        reporter.sync(run, responseTraceId(exchange));
         send(exchange, 200, render(run));
         logInfo(responseTraceId(exchange), "审批诊断出参",
             "diagnosisId=" + diagnosisId + ",decision=" + decision + ",approverId=" + approverId + ",state=" + run.state());
