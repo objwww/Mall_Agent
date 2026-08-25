@@ -3,17 +3,22 @@ package com.trade.mall.agent.runtime;
 import com.trade.mall.agent.alert.infrastructure.StderrAlertPort;
 import com.trade.mall.agent.approval.infrastructure.JdbcMallAdminAuthorizationPort;
 import com.trade.mall.agent.execution.infrastructure.HttpMallRefundActionPort;
+import com.trade.mall.agent.evidence.collector.EvidenceCollector;
+import com.trade.mall.agent.evidence.collector.McpEvidenceCollector;
 import com.trade.mall.agent.llm.infrastructure.JdbcPromptVersionStore;
 import com.trade.mall.agent.llm.infrastructure.JdbcSkillVersionStore;
 import com.trade.mall.agent.llm.infrastructure.OpenAiCompatibleLlmClientFactory;
 import com.trade.mall.agent.runtime.http.AgentControlHttpServer;
 import com.trade.mall.agent.runtime.infrastructure.DriverManagerDataSource;
+import com.trade.mall.agent.mcp.McpReadOnlyClient;
 
 import javax.sql.DataSource;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -47,13 +52,14 @@ public final class MallAgentMain {
         String tenantId = env.required("AGENT_MALL_TENANT_ID");
         String mallApiKey = env.required("AGENT_MALL_API_KEY");
         StderrAlertPort alerts = new StderrAlertPort();
+        List<EvidenceCollector<?>> mcpCollectors = loadMcpCollectors(env);
 
         DurableMallAgentRuntime runtime = new DurableMallAgentRuntime(
             runtimeDb, evidenceDb, llmFactory, prompts, skills, initialModelId, toolSchemaVersion,
             new JdbcMallAdminAuthorizationPort(evidenceDb, Duration.ofSeconds(1)),
             () -> parseOptionalBoolean(System.getenv("AGENT_MONEY_ACTION_ALLOWED")),
             new HttpMallRefundActionPort(mallBaseUri.toString(), tenantId, mallApiKey),
-            mallBaseUri, tenantId, mallApiKey, alerts, System::currentTimeMillis);
+            mallBaseUri, tenantId, mallApiKey, alerts, System::currentTimeMillis, mcpCollectors);
 
         AgentControlHttpServer control = new AgentControlHttpServer(
             new InetSocketAddress(env.get("AGENT_CONTROL_HOST", "127.0.0.1"), env.intValue("AGENT_CONTROL_PORT", 18080, 1, 65535)),
@@ -116,6 +122,29 @@ public final class MallAgentMain {
         String initial = env.required("AGENT_LLM_INITIAL_MODEL_ID");
         if (!out.containsKey(initial)) throw new IllegalArgumentException("AGENT_LLM_INITIAL_MODEL_ID is not listed in AGENT_LLM_PROFILES: " + initial);
         return Map.copyOf(out);
+    }
+
+    static List<EvidenceCollector<?>> loadMcpCollectors(Env env) {
+        String raw = env.optional("AGENT_MCP_PROFILES");
+        if (raw == null) return List.of();
+        List<EvidenceCollector<?>> collectors = new ArrayList<>();
+        for (String token : raw.split(",")) {
+            String id = token.trim();
+            if (id.isEmpty()) continue;
+            String key = id.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "_");
+            String prefix = "AGENT_MCP_" + key + "_";
+            String sourceType = env.required(prefix + "SOURCE_TYPE");
+            if (!sourceType.matches("[A-Z][A-Z0-9_]{0,63}")) {
+                throw new IllegalArgumentException(prefix + "SOURCE_TYPE 必须是大写字母、数字或下划线");
+            }
+            String tool = env.required(prefix + "TOOL");
+            McpReadOnlyClient client = new McpReadOnlyClient(
+                URI.create(env.required(prefix + "ENDPOINT")), env.optional(prefix + "TOKEN"), tool,
+                Duration.ofSeconds(env.longValue(prefix + "TIMEOUT_SECONDS", 5L, 1L, 30L)));
+            client.verify();
+            collectors.add(new McpEvidenceCollector(sourceType, tool, env.required(prefix + "ARGUMENT"), client));
+        }
+        return List.copyOf(collectors);
     }
 
     private static Boolean parseOptionalBoolean(String raw) {

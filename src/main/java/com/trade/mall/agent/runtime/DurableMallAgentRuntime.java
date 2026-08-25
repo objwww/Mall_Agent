@@ -125,8 +125,21 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
                                    AuthorizationPort authorizationPort, KillSwitch.ConfigReader configReader,
                                    ActionPort refundActionPort, URI mallBaseUri, String tenantId, String agentApiKey,
                                    AlertPort alertPort, LongSupplier clock) {
+        this(runtimeDataSource, evidenceReadDataSource, llmClientFactory, promptVersionStore, skillVersionStore,
+            initialModelId, toolSchemaVersion, authorizationPort, configReader, refundActionPort, mallBaseUri,
+            tenantId, agentApiKey, alertPort, clock, List.of());
+    }
+
+    public DurableMallAgentRuntime(DataSource runtimeDataSource, DataSource evidenceReadDataSource,
+                                   LlmClientFactory llmClientFactory, PromptVersionStore promptVersionStore,
+                                   SkillVersionStore skillVersionStore, String initialModelId, String toolSchemaVersion,
+                                   AuthorizationPort authorizationPort, KillSwitch.ConfigReader configReader,
+                                   ActionPort refundActionPort, URI mallBaseUri, String tenantId, String agentApiKey,
+                                   AlertPort alertPort, LongSupplier clock,
+                                   List<EvidenceCollector<?>> additionalEvidenceCollectors) {
         this(runtimeDataSource, llmClientFactory, promptVersionStore, skillVersionStore, initialModelId, toolSchemaVersion,
-            jdbcEvidenceCollectors(evidenceReadDataSource, mallBaseUri, tenantId, agentApiKey),
+            appendCollectors(jdbcEvidenceCollectors(evidenceReadDataSource, mallBaseUri, tenantId, agentApiKey),
+                additionalEvidenceCollectors),
             jdbcVerificationSources(evidenceReadDataSource, mallBaseUri, tenantId, agentApiKey),
             authorizationPort, configReader, refundActionPort,
             new HttpMallOrderStatusResyncExecutor(mallBaseUri, tenantId, agentApiKey, Duration.ofSeconds(5)),
@@ -263,6 +276,14 @@ public final class DurableMallAgentRuntime implements AutoCloseable {
             new AfterSaleEvidenceCollector(new JdbcAfterSaleReadPort(readOnly, DEFAULT_EVIDENCE_DB_QUERY_TIMEOUT)),
             new RefundLogEvidenceCollector(new JdbcRefundLogReadPort(readOnly, DEFAULT_EVIDENCE_DB_QUERY_TIMEOUT))
         );
+    }
+
+    private static List<EvidenceCollector<?>> appendCollectors(List<EvidenceCollector<?>> builtIn,
+                                                                 List<EvidenceCollector<?>> additional) {
+        Objects.requireNonNull(additional, "additionalEvidenceCollectors");
+        java.util.ArrayList<EvidenceCollector<?>> merged = new java.util.ArrayList<>(builtIn);
+        merged.addAll(additional);
+        return List.copyOf(merged);
     }
 
     private static List<EvidenceCollector<?>> jdbcEvidenceCollectors(DataSource evidenceReadDataSource,

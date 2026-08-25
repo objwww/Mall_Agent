@@ -6,12 +6,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 一个刻意最小化的、单层 JSON 对象解析器——**不是**要重新发明 Jackson。
+ * 一个刻意最小化的 JSON 解析器——**不是**要重新发明 Jackson。
  *
  * <p>为什么手写而不是引入一个 JSON 库：Maven Central 被出口策略拦截（D1 起反复确认的
  * 沙箱约束），本项目至今所有第三方依赖都是"文档里写了、代码里没法引入"。D6 `M-CAP-01`
- * 要求"结构化输出：schema 约束 + 解析失败→确定失败"——这条验收标准恰好只需要解析
- * 一层扁平对象（字符串/数字/布尔/字符串数组，不需要嵌套对象），完全在手写一个小型
+ * 要求"结构化输出：schema 约束 + 解析失败→确定失败"，MCP 响应又需要嵌套对象和数组，
+ * 两者仍完全在一个小型
  * 递归下降解析器的合理范围内，比为了避免"重新发明轮子"这条一般性顾虑而在这里引入
  * 一个假的/简化的"JSON 库"更诚实——生产环境接入真实 LLM SDK 时，这个类应该被替换成
  * Jackson/Gson 之类的真实实现，见 `D6-REPORT.md` §4。</p>
@@ -26,8 +26,7 @@ import java.util.Map;
  * "解析出来的 {@code Map<String,Object>} 该怎么翻译成本域的结果类型"，这才是它们各自的
  * 业务逻辑，解析本身不是。</p>
  *
- * <p>能解析：{@code {"key": "string"|number|true|false|null|["s1","s2"]}}，
- * 字符串支持 {@code \" \\ \n \t} 四种转义。任何语法不对的地方都抛
+ * <p>能解析标准 JSON 对象、嵌套对象与数组；字符串支持标准 JSON 转义。任何语法不对的地方都抛
  * {@link IllegalArgumentException}——调用方把它当作"LLM 输出不满足 schema"的信号，
  * 触发"追加修复提示、重试"。</p>
  */
@@ -38,15 +37,17 @@ public final class LlmJsonUtil {
         if (json == null) throw new IllegalArgumentException("null JSON input");
         Cursor c = new Cursor(json);
         c.skipWs();
-        c.expect('{');
-        Map<String, Object> result = new LinkedHashMap<>();
+        Map<String, Object> result = parseObject(c);
         c.skipWs();
-        if (c.peek() == '}') {
-            c.next();
-            c.skipWs();
-            c.expectEnd();
-            return result;
-        }
+        c.expectEnd();
+        return result;
+    }
+
+    private static Map<String,Object> parseObject(Cursor c) {
+        c.expect('{');
+        Map<String,Object> result = new LinkedHashMap<>();
+        c.skipWs();
+        if (c.pos < c.len && c.peek() == '}') { c.next(); return result; }
         while (true) {
             c.skipWs();
             String key = parseString(c);
@@ -61,15 +62,14 @@ public final class LlmJsonUtil {
             if (sep == '}') break;
             throw new IllegalArgumentException("expected ',' or '}' at position " + (c.pos - 1));
         }
-        c.skipWs();
-        c.expectEnd();
         return result;
     }
 
     private static Object parseValue(Cursor c) {
         char ch = c.peek();
         if (ch == '"') return parseString(c);
-        if (ch == '[') return parseStringArray(c);
+        if (ch == '{') return parseObject(c);
+        if (ch == '[') return parseArray(c);
         if (ch == 't' || ch == 'f') return parseBoolean(c);
         if (ch == 'n') { c.expectLiteral("null"); return null; }
         if (ch == '-' || Character.isDigit(ch)) return parseNumber(c);
@@ -89,8 +89,18 @@ public final class LlmJsonUtil {
                 switch (esc) {
                     case '"' -> sb.append('"');
                     case '\\' -> sb.append('\\');
+                    case '/' -> sb.append('/');
+                    case 'b' -> sb.append('\b');
+                    case 'f' -> sb.append('\f');
                     case 'n' -> sb.append('\n');
+                    case 'r' -> sb.append('\r');
                     case 't' -> sb.append('\t');
+                    case 'u' -> {
+                        if (c.pos + 4 > c.len) throw new IllegalArgumentException("unterminated unicode escape");
+                        try { sb.append((char) Integer.parseInt(c.src.substring(c.pos, c.pos + 4), 16)); }
+                        catch (NumberFormatException bad) { throw new IllegalArgumentException("invalid unicode escape"); }
+                        c.pos += 4;
+                    }
                     default -> throw new IllegalArgumentException("unsupported escape \\" + esc);
                 }
             } else {
@@ -100,14 +110,14 @@ public final class LlmJsonUtil {
         return sb.toString();
     }
 
-    private static List<String> parseStringArray(Cursor c) {
+    private static List<Object> parseArray(Cursor c) {
         c.expect('[');
-        List<String> out = new ArrayList<>();
+        List<Object> out = new ArrayList<>();
         c.skipWs();
         if (c.peek() == ']') { c.next(); return out; }
         while (true) {
             c.skipWs();
-            out.add(parseString(c));
+            out.add(parseValue(c));
             c.skipWs();
             char sep = c.next();
             if (sep == ',') continue;
@@ -167,4 +177,3 @@ public final class LlmJsonUtil {
         }
     }
 }
-
