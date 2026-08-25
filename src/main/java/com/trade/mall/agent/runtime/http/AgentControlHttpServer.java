@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -48,6 +49,7 @@ public final class AgentControlHttpServer implements AutoCloseable {
         this.server.setExecutor(executor);
         this.server.createContext("/internal/v1/diagnoses", this::handleDiagnoses);
         this.server.createContext("/internal/v1/health", this::handleHealth);
+        this.server.createContext("/v1/runs", this::handleEvaluationRun);
     }
 
     public void start() { server.start(); }
@@ -94,6 +96,45 @@ public final class AgentControlHttpServer implements AutoCloseable {
             send(exchange, 409, jsonError(conflict.getMessage()));
         } catch (RuntimeException failed) {
             logWarn(traceId, "诊断接口运行失败", failed.getClass().getSimpleName());
+            send(exchange, 500, jsonError("runtime_failure"));
+        } finally {
+            exchange.close();
+        }
+    }
+
+    private void handleEvaluationRun(HttpExchange exchange) throws IOException {
+        String traceId = prepareTraceId(exchange);
+        try {
+            if (!authenticated(exchange)) { send(exchange, 401, jsonError("unauthorized")); return; }
+            if (!exchange.getRequestMethod().equals("POST") || !exchange.getRequestURI().getPath().equals("/v1/runs")) {
+                send(exchange, 405, jsonError("method_not_allowed")); return;
+            }
+            Map<String,Object> body = parseBody(exchange);
+            long evaluationRunId = requiredLong(body, "evaluationRunId");
+            String caseId = required(body, "caseId");
+            String input = required(body, "input");
+            String diagnosisId = evaluationDiagnosisId(evaluationRunId, caseId);
+            String ticketSn = "eval-" + evaluationRunId + "-" + digest(caseId).substring(0, 12);
+            logInfo(traceId, "自动评测入参", "evaluationRunId=" + evaluationRunId + ",caseId=" + caseId
+                + ",inputLength=" + input.length() + ",diagnosisId=" + diagnosisId);
+            DiagnosisRun run = store.find(diagnosisId)
+                .orElseGet(() -> orchestrator.runToApproval(ticketSn, diagnosisId, input));
+            reporter.sync(run, traceId, evaluationRunId);
+            StringBuilder response = new StringBuilder("{");
+            field(response, "runId", AgentOperationReporter.runtimeRunId(diagnosisId)); comma(response);
+            field(response, "output", render(run)); comma(response);
+            field(response, "traceId", traceId); response.append('}');
+            send(exchange, 200, response.toString());
+            logInfo(traceId, "自动评测出参", "evaluationRunId=" + evaluationRunId + ",caseId=" + caseId
+                + ",state=" + run.state() + ",runId=" + AgentOperationReporter.runtimeRunId(diagnosisId));
+        } catch (IllegalArgumentException bad) {
+            logWarn(traceId, "自动评测参数错误", bad.getMessage());
+            send(exchange, 400, jsonError(bad.getMessage()));
+        } catch (IllegalStateException conflict) {
+            logWarn(traceId, "自动评测状态冲突", conflict.getMessage());
+            send(exchange, 409, jsonError(conflict.getMessage()));
+        } catch (RuntimeException failed) {
+            logWarn(traceId, "自动评测运行失败", failed.getClass().getSimpleName());
             send(exchange, 500, jsonError("runtime_failure"));
         } finally {
             exchange.close();
@@ -151,6 +192,28 @@ public final class AgentControlHttpServer implements AutoCloseable {
         Object value = body.get(key);
         if (!(value instanceof String s) || s.isBlank()) throw new IllegalArgumentException("missing " + key);
         return s;
+    }
+
+    private static long requiredLong(Map<String,Object> body, String key) {
+        Object value = body.get(key);
+        if (!(value instanceof Double number) || !Double.isFinite(number)
+                || number < 1 || number > Long.MAX_VALUE || number != Math.rint(number)) {
+            throw new IllegalArgumentException("missing or invalid " + key);
+        }
+        return number.longValue();
+    }
+
+    private static String evaluationDiagnosisId(long evaluationRunId, String caseId) {
+        return "eval-" + evaluationRunId + "-" + digest(caseId).substring(0, 24);
+    }
+
+    private static String digest(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private boolean authenticated(HttpExchange exchange) {

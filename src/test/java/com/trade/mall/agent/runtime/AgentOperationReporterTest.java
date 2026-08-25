@@ -42,10 +42,11 @@ class AgentOperationReporterTest {
             DiagnosisRun run = new DiagnosisRun("ticket-1", "diag-1", DiagnosisState.RESOLVED,
                 9, null, null, null, null, null, null);
 
-            assertTrue(reporter.sync(run, "trace-1"));
+            assertTrue(reporter.sync(run, "trace-1", 7L));
             assertEquals(3, requests.size());
             assertTrue(requests.get(0).contains("/agentRuntime/v1/runs/start"));
             assertTrue(requests.get(0).contains("\"agentRole\":\"MALL_HANDLER\""));
+            assertTrue(requests.get(0).contains("\"evaluationRunId\":7"));
             assertTrue(requests.get(1).contains("/tool-calls"));
             assertTrue(requests.get(1).contains("\"toolName\":\"evidence.order\""));
             assertTrue(requests.get(2).contains("/finish"));

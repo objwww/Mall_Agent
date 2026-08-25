@@ -49,12 +49,16 @@ public final class AgentOperationReporter {
 
     /** 上报失败不改变诊断事实；下次创建、查询或审批会用相同幂等键补报。 */
     public boolean sync(DiagnosisRun run, String traceId) {
+        return sync(run, traceId, null);
+    }
+
+    public boolean sync(DiagnosisRun run, String traceId, Long evaluationRunId) {
         try {
             List<DomainEvent> events = eventsOf(run);
             String runId = runId(run.diagnosisId());
             VersionSnapshot version = versionOf(run);
             long startedAt = events.stream().mapToLong(DomainEvent::occurredAt).min().orElse(System.currentTimeMillis());
-            post("/agentRuntime/v1/runs/start", startBody(run, runId, traceId, version, startedAt));
+            post("/agentRuntime/v1/runs/start", startBody(run, runId, traceId, evaluationRunId, version, startedAt));
 
             List<DomainEvent> tools = events.stream().filter(e -> toolName(e) != null)
                 .sorted(Comparator.comparingLong(DomainEvent::occurredAt).thenComparing(DomainEvent::eventId)).toList();
@@ -87,7 +91,7 @@ public final class AgentOperationReporter {
         for (DomainEvent event : events) target.putIfAbsent(event.eventId(), event);
     }
 
-    private Map<String,Object> startBody(DiagnosisRun run, String runId, String traceId,
+    private Map<String,Object> startBody(DiagnosisRun run, String runId, String traceId, Long evaluationRunId,
                                          VersionSnapshot version, long startedAt) {
         Map<String,Object> body = new LinkedHashMap<>();
         body.put("eventId", eventId("start", run.diagnosisId()));
@@ -95,6 +99,7 @@ public final class AgentOperationReporter {
         body.put("agentName", "MallAgent工单处理");
         body.put("agentRole", "MALL_HANDLER");
         body.put("traceId", identity(traceId));
+        body.put("evaluationRunId", evaluationRunId);
         body.put("diagnosisId", sized(run.diagnosisId(), "diagnosisId", 64));
         body.put("modelId", version == null ? defaultModelId : sized(version.modelId(), "modelId", 100));
         body.put("promptVersion", version == null ? defaultPromptVersion : sized(version.promptVersion(), "promptVersion", 64));
@@ -174,7 +179,8 @@ public final class AgentOperationReporter {
         return end < 0 ? value : value.substring(0, end);
     }
 
-    private static String runId(String diagnosisId) { return "run-" + digest(diagnosisId).substring(0, 40); }
+    public static String runtimeRunId(String diagnosisId) { return "run-" + digest(diagnosisId).substring(0, 40); }
+    private static String runId(String diagnosisId) { return runtimeRunId(diagnosisId); }
     private static String eventId(String kind, String seed) { return kind + "-" + digest(seed).substring(0, 40); }
     private static String identity(String value) {
         if (value == null || value.isBlank()) return null;
