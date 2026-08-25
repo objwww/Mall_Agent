@@ -38,7 +38,7 @@ class AgentOperationReporterTest {
                 "Evidence.Collected", 0, "ORDER locator=oms_order", 100L));
             AgentOperationReporter reporter = new AgentOperationReporter(
                 java.net.URI.create("http://127.0.0.1:" + server.getAddress().getPort()), "ingest-key",
-                "handler-model", "prompt-v1", "skill-v1", "tool-v1", ledger, Duration.ofSeconds(2));
+                "handler-model", () -> "prompt-v1", "skill-v1", "tool-v1", ledger, Duration.ofSeconds(2));
             DiagnosisRun run = new DiagnosisRun("ticket-1", "diag-1", DiagnosisState.RESOLVED,
                 9, null, null, null, null, null, null);
 

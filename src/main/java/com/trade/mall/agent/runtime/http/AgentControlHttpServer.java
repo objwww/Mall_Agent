@@ -3,6 +3,8 @@ package com.trade.mall.agent.runtime.http;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.trade.mall.agent.llm.LlmJsonUtil;
+import com.trade.mall.agent.llm.PromptSnapshot;
+import com.trade.mall.agent.llm.PromptVersionStore;
 import com.trade.mall.agent.runtime.AgentOperationReporter;
 import com.trade.mall.agent.orchestration.ApprovalDecision;
 import com.trade.mall.agent.orchestration.DiagnosisOrchestrator;
@@ -33,15 +35,17 @@ public final class AgentControlHttpServer implements AutoCloseable {
     private final DiagnosisOrchestrator orchestrator;
     private final DiagnosisRunStore store;
     private final AgentOperationReporter reporter;
+    private final PromptVersionStore prompts;
     private final byte[] expectedBearer;
 
     public AgentControlHttpServer(InetSocketAddress address, String apiKey,
                                   DiagnosisOrchestrator orchestrator, DiagnosisRunStore store,
-                                  AgentOperationReporter reporter) {
+                                  AgentOperationReporter reporter, PromptVersionStore prompts) {
         if (apiKey == null || apiKey.isBlank()) throw new IllegalArgumentException("control apiKey must not be blank");
         this.orchestrator = Objects.requireNonNull(orchestrator, "orchestrator");
         this.store = Objects.requireNonNull(store, "store");
         this.reporter = Objects.requireNonNull(reporter, "reporter");
+        this.prompts = Objects.requireNonNull(prompts, "prompts");
         this.expectedBearer = ("Bearer " + apiKey.trim()).getBytes(StandardCharsets.UTF_8);
         try { this.server = HttpServer.create(Objects.requireNonNull(address, "address"), 0); }
         catch (IOException e) { throw new IllegalStateException("cannot bind Agent control HTTP server", e); }
@@ -49,11 +53,61 @@ public final class AgentControlHttpServer implements AutoCloseable {
         this.server.setExecutor(executor);
         this.server.createContext("/internal/v1/diagnoses", this::handleDiagnoses);
         this.server.createContext("/internal/v1/health", this::handleHealth);
+        this.server.createContext("/internal/v1/prompts", this::handlePrompts);
         this.server.createContext("/v1/runs", this::handleEvaluationRun);
     }
 
     public void start() { server.start(); }
     public int port() { return server.getAddress().getPort(); }
+
+    private void handlePrompts(HttpExchange exchange) throws IOException {
+        String traceId = prepareTraceId(exchange);
+        try {
+            if (!authenticated(exchange)) { send(exchange, 401, jsonError("unauthorized")); return; }
+            String path = exchange.getRequestURI().getPath();
+            String base = "/internal/v1/prompts";
+            String rest = path.length() <= base.length() ? "" : path.substring(base.length());
+            logInfo(traceId, "提示词版本接口入参", "method=" + exchange.getRequestMethod() + ",path=" + path);
+            if ((rest.isEmpty() || rest.equals("/")) && exchange.getRequestMethod().equals("GET")) {
+                int limit = queryLimit(exchange.getRequestURI().getRawQuery());
+                send(exchange, 200, renderPromptHistory(prompts.history(limit)));
+                logInfo(traceId, "查询提示词历史出参", "limit=" + limit + ",currentVersion=" + prompts.currentVersion());
+                return;
+            }
+            if ((rest.isEmpty() || rest.equals("/")) && exchange.getRequestMethod().equals("POST")) {
+                Map<String,Object> body = parseBody(exchange);
+                String version = promptVersion(required(body, "version"));
+                String prompt = required(body, "prompt");
+                if (prompt.length() > 60_000) throw new IllegalArgumentException("prompt too long");
+                prompts.publish(version, prompt);
+                send(exchange, 200, renderPrompt(prompts.current()));
+                logInfo(traceId, "发布提示词版本出参", "version=" + version + ",promptLength=" + prompt.length());
+                return;
+            }
+            if (rest.equals("/current") && exchange.getRequestMethod().equals("GET")) {
+                send(exchange, 200, renderPrompt(prompts.current()));
+                logInfo(traceId, "查询当前提示词出参", "version=" + prompts.currentVersion());
+                return;
+            }
+            if (rest.startsWith("/") && rest.endsWith("/activate") && exchange.getRequestMethod().equals("POST")) {
+                String version = promptVersion(rest.substring(1, rest.length() - "/activate".length()));
+                PromptSnapshot activated = prompts.activate(version);
+                send(exchange, 200, renderPrompt(activated));
+                logInfo(traceId, "切换提示词版本出参", "version=" + version);
+                return;
+            }
+            send(exchange, 404, jsonError("not_found"));
+        } catch (IllegalArgumentException bad) {
+            logWarn(traceId, "提示词版本参数错误", bad.getMessage());
+            send(exchange, 400, jsonError(bad.getMessage()));
+        } catch (IllegalStateException conflict) {
+            logWarn(traceId, "提示词版本状态冲突", conflict.getMessage());
+            send(exchange, 409, jsonError(conflict.getMessage()));
+        } catch (RuntimeException failed) {
+            logWarn(traceId, "提示词版本接口失败", failed.getClass().getSimpleName());
+            send(exchange, 500, jsonError("runtime_failure"));
+        } finally { exchange.close(); }
+    }
 
 
     private void handleHealth(HttpExchange exchange) throws IOException {
@@ -203,6 +257,26 @@ public final class AgentControlHttpServer implements AutoCloseable {
         return number.longValue();
     }
 
+    private static int queryLimit(String query) {
+        if (query == null || query.isBlank()) return 50;
+        for (String item : query.split("&")) {
+            String[] pair = item.split("=", 2);
+            if (pair.length == 2 && pair[0].equals("limit")) {
+                try {
+                    int value = Integer.parseInt(pair[1]);
+                    if (value >= 1 && value <= 200) return value;
+                } catch (NumberFormatException ignored) {}
+                throw new IllegalArgumentException("limit must be between 1 and 200");
+            }
+        }
+        return 50;
+    }
+
+    private static String promptVersion(String version) {
+        if (!version.matches("[A-Za-z0-9._-]{1,64}")) throw new IllegalArgumentException("invalid prompt version");
+        return version;
+    }
+
     private static String evaluationDiagnosisId(long evaluationRunId, String caseId) {
         return "eval-" + evaluationRunId + "-" + digest(caseId).substring(0, 24);
     }
@@ -269,6 +343,24 @@ public final class AgentControlHttpServer implements AutoCloseable {
         }
         out.append('}');
         return out.toString();
+    }
+
+    private static String renderPrompt(PromptSnapshot prompt) {
+        StringBuilder out = new StringBuilder("{");
+        field(out, "version", prompt.version()); comma(out); field(out, "prompt", prompt.prompt());
+        return out.append('}').toString();
+    }
+
+    private static String renderPromptHistory(java.util.List<PromptVersionStore.PromptVersionInfo> versions) {
+        StringBuilder out = new StringBuilder("{\"items\":[");
+        boolean first = true;
+        for (PromptVersionStore.PromptVersionInfo version : versions) {
+            if (!first) out.append(','); first = false;
+            out.append('{'); field(out, "version", version.version()); comma(out);
+            out.append("\"current\":").append(version.current()).append(',');
+            out.append("\"createdAt\":").append(version.createdAt()).append('}');
+        }
+        return out.append("]}").toString();
     }
 
     private static String jsonError(String message) {

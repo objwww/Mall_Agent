@@ -1,6 +1,7 @@
 package com.trade.mall.agent.llm;
 
 import java.util.Optional;
+import java.util.List;
 
 /**
  * PromptVersionStore（提示词版本库）。current() 给新 Diagnosis 使用；find(version) 用于
@@ -17,5 +18,15 @@ public interface PromptVersionStore {
 
     default String currentVersion() { return current().version(); }
     default String currentPrompt() { return current().prompt(); }
-}
 
+    /** 按发布时间倒序返回版本元数据，不返回提示词正文。 */
+    List<PromptVersionInfo> history(int limit);
+
+    /** 发布不可变新版本，并立即供新 Diagnosis 使用。 */
+    void publish(String version, String prompt);
+
+    /** 重新激活历史版本；不复制、不覆盖历史内容。 */
+    PromptSnapshot activate(String version);
+
+    record PromptVersionInfo(String version, boolean current, long createdAt) {}
+}

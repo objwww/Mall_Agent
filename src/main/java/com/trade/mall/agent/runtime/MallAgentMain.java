@@ -57,9 +57,9 @@ public final class MallAgentMain {
             env.required("AGENT_CONTROL_API_KEY"), runtime.orchestrator(), runtime.diagnosisRunStore(),
             new AgentOperationReporter(
                 URI.create(env.required("AGENT_OPERATIONS_BASE_URL")), env.required("AGENT_OPERATIONS_INGEST_KEY"),
-                initialModelId, prompts.current().version(), env.get("AGENT_SKILL_VERSION", "v1"),
+                initialModelId, prompts::currentVersion, env.get("AGENT_SKILL_VERSION", "v1"),
                 toolSchemaVersion, runtime.eventLedger(), Duration.ofSeconds(
-                    env.longValue("AGENT_OPERATIONS_TIMEOUT_SECONDS", 5L, 1L, 120L))));
+                    env.longValue("AGENT_OPERATIONS_TIMEOUT_SECONDS", 5L, 1L, 120L))), prompts);
         DurableMallAgentScheduler scheduler = new DurableMallAgentScheduler(
             runtime, alerts, Duration.ofMillis(env.longValue("AGENT_MAINTENANCE_INTERVAL_MS", 5000L, 1000L, 3_600_000L)),
             env.intValue("AGENT_MAINTENANCE_BATCH", 50, 1, 1000));
